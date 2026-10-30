@@ -1,6 +1,6 @@
-# FriesTrader moomoo 版 — 中文配置说明
+# CoreTrade — 中文配置说明
 
-这是 [YizhiSong/FriesTrader](https://github.com/YizhiSong/FriesTrader)
+CoreTrade 是 [YizhiSong/FriesTrader](https://github.com/YizhiSong/FriesTrader)
 的 moomoo（富途美国）移植版，给没有 SSN、开不了 Robinhood 的人用。
 英文 `README.md` 是完整说明，这里只讲怎么把它跑起来。
 

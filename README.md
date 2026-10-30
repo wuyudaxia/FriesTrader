@@ -1,9 +1,9 @@
-# FriesTrader — moomoo edition
+# CoreTrade
 
 An AI trading agent built to run cheap and fully on its own, trading
 U.S. stocks on [moomoo](https://www.moomoo.com) through its official
-[hosted MCP server](https://open.moomoo.com/mcp-docs/overview). This is
-a port of [YizhiSong/FriesTrader](https://github.com/YizhiSong/FriesTrader)
+[hosted MCP server](https://open.moomoo.com/mcp-docs/overview). CoreTrade
+is a port of [YizhiSong/FriesTrader](https://github.com/YizhiSong/FriesTrader)
 (originally built on Robinhood's Agentic Trading MCP) for people who
 can't open a Robinhood account — e.g. international students in the
 U.S. without an SSN, whom moomoo will onboard on a passport.
