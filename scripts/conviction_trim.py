@@ -19,6 +19,9 @@ def main():
                          "current_position_value exceeded target_size by more than "
                          "overweight_trigger_pct, from a trade_log.jsonl lookup")
     p.add_argument("--min-overweight-conviction-cycles", type=int, required=True)
+    p.add_argument("--bid-price", type=float,
+                    help="fresh bid; when given, trim_dollar_amount is also floored to a whole-share "
+                         "trim_quantity (moomoo orders take a share quantity)")
     args = p.parse_args()
 
     if args.target_size <= 0:
@@ -31,6 +34,11 @@ def main():
     consecutive_cycles = (args.prior_consecutive_overweight_cycles + 1) if qualifies_this_cycle else 0
     triggered = qualifies_this_cycle and consecutive_cycles >= args.min_overweight_conviction_cycles
     trim_dollar_amount = round(args.current_position_value - args.target_size, 2) if triggered else None
+    trim_quantity = None
+    if triggered and args.bid_price:
+        trim_quantity = int(trim_dollar_amount // args.bid_price)
+        if trim_quantity == 0:
+            triggered = False
 
     print(json.dumps({
         "overweight_pct": round(overweight_pct, 6),
@@ -38,6 +46,7 @@ def main():
         "consecutive_cycles": consecutive_cycles,
         "triggered": triggered,
         "trim_dollar_amount": trim_dollar_amount,
+        "trim_quantity": trim_quantity,
         "action": "sell_partial_position" if triggered else "hold_monitor",
     }))
 

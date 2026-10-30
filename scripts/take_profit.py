@@ -41,6 +41,10 @@ def main():
     p.add_argument("--already-fired", type=parse_float_set, default=set(),
                     help="comma-separated gain_pct values already fired this holding period "
                          "(from a trade_log.jsonl lookup), e.g. '0.15'")
+    p.add_argument("--whole-shares", action="store_true",
+                    help="floor each tier's quantity_sold to whole shares (moomoo orders take a "
+                         "share quantity); a tier that floors to 0 shares is marked fired but "
+                         "sells nothing, so it is never re-attempted on a later cycle")
     args = p.parse_args()
 
     if args.average_cost <= 0:
@@ -61,18 +65,21 @@ def main():
         if gain_pct >= tier["gain_pct"]:
             quantity_before = running_qty
             quantity_sold = quantity_before * tier["sell_fraction"]
+            if args.whole_shares:
+                quantity_sold = float(int(quantity_sold))
             running_qty -= quantity_sold
             fired_this_cycle.append({
                 "tier_gain_pct": tier["gain_pct"],
                 "sell_fraction": tier["sell_fraction"],
                 "quantity_before": round(quantity_before, 6),
                 "quantity_sold": round(quantity_sold, 6),
+                **({"sell_skipped_zero_shares": True} if quantity_sold == 0 else {}),
             })
             tiers_status.append({"gain_pct": tier["gain_pct"], "fired": True})
         else:
             tiers_status.append({"gain_pct": tier["gain_pct"], "fired": False})
 
-    triggered = len(fired_this_cycle) > 0
+    triggered = any(f["quantity_sold"] > 0 for f in fired_this_cycle)
 
     print(json.dumps({
         "gain_pct": round(gain_pct, 6),

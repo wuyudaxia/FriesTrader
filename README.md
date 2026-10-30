@@ -1,28 +1,44 @@
-# FriesTrader
+# FriesTrader — moomoo edition
 
-![License](https://img.shields.io/github/license/YizhiSong/FriesTrader)
-![GitHub stars](https://img.shields.io/github/stars/YizhiSong/FriesTrader)
+An AI trading agent built to run cheap and fully on its own, trading
+U.S. stocks on [moomoo](https://www.moomoo.com) through its official
+[hosted MCP server](https://open.moomoo.com/mcp-docs/overview). This is
+a port of [YizhiSong/FriesTrader](https://github.com/YizhiSong/FriesTrader)
+(originally built on Robinhood's Agentic Trading MCP) for people who
+can't open a Robinhood account — e.g. international students in the
+U.S. without an SSN, whom moomoo will onboard on a passport.
 
-An AI trading agent built to run cheap and fully on its own, trading real
-orders on [Robinhood](https://robinhood.com) using its
-[Agentic Trading MCP server](https://robinhood.com/us/en/agentic-trading/).
-Once set up, it's able to run unattended on its own schedule every
-weekday, no manual triggering needed, and the actual safety mechanism is
-mechanical, auditable risk rules, not the model's judgment. Two short
-scheduled Claude Code sessions a day screen stocks, write out their
-reasoning, and (only under a narrow, explicit gate) place real trades,
-without a team of specialized sub-agents burning tokens on every
-decision. Because it's just two lean sessions instead of a multi-agent
-pipeline, it runs comfortably on a Claude Pro subscription (as low as
-$200/year on the annual plan), no Claude Max or metered API spend
-required.
+Once set up, it runs unattended on its own schedule every weekday, and
+the actual safety mechanism is mechanical, auditable risk rules, not
+the model's judgment. Two short scheduled Claude Code sessions a day
+screen stocks, write out their reasoning, and (only under a narrow,
+explicit gate) place orders — first on moomoo's **simulated-trading
+account** with fake money, and only after a minimum number of validated
+paper days, on the real one. Because it's just two lean sessions
+instead of a multi-agent pipeline, it runs comfortably on a Claude Pro
+subscription.
 
-This is a template/framework extracted from a real, live deployment.
-Adapt it, don't just run it blind — read "What this does and doesn't
-solve" below before pointing it at real money.
+This is a template/framework. Adapt it, don't just run it blind — read
+"What this does and doesn't solve" and "Known gaps" below before
+pointing it at real money.
 
-> If you build on this, a star, a fork, or a link back to this repo is
-> always appreciated.
+> 中文配置说明见 [`SETUP_zh.md`](SETUP_zh.md)。
+
+## What changed from the Robinhood original
+
+| | Robinhood original | moomoo edition |
+|---|---|---|
+| Broker connection | Robinhood Agentic Trading MCP | moomoo hosted MCP (`https://mcp.moomoo.com/mcp`, OAuth) |
+| Account requirement | SSN | passport + proof of address works for non-U.S. tax residents |
+| Modes | `dry_run` → `live` | `dry_run` (log only) → **`paper`** (real orders on moomoo's simulated account) → `live` |
+| Order unit | dollar amount, fractional shares | **whole shares** — every size is floored to `floor(dollars / ask)`; a candidate that can't afford one share is skipped |
+| Order preview | `review_equity_order` | broker capacity check (`account_trading_info` / `sim_trade_max_buy_sell`); a `need_order_confirm` warning is **rejected, never auto-confirmed** |
+| Screening math | model computes in prose | `scripts/screen_metrics.py` (new) |
+| Realized P&L for loss limits | `get_realized_pnl` | `scripts/realized_pnl.py` (new) sums the pipeline's own confirmed fills |
+| Watchlist / scan | Robinhood watchlist + saved scan | moomoo watchlist group + `quote_stock_screen` query stored in `risk_rules.json` |
+
+The 7 original risk scripts are unchanged except for a `--whole-shares`
+/ `--bid-price` option where share rounding matters.
 
 ## Why this is safer than it sounds
 
@@ -35,27 +51,35 @@ nervous. Here's what actually stands between a thesis and an order:
   `scripts/` rather than the model doing arithmetic in prose. Same
   inputs always produce the same numbers, and a good story never cancels
   a stop-loss.
-- **New deployments start in `dry_run` and stay there** for a minimum
-  number of cycles (`dry_run_min_cycles_before_live`) before a live
-  order is even possible, so you can watch it screen and reason before
-  it touches real money.
+- **New deployments start in `paper`** — orders really go to moomoo's
+  simulated account, so you see real fills, slippage and position
+  tracking with fake money — **and stay there** for a minimum number of
+  validated days (`execution.paper_min_cycles_before_live`) before a
+  live order is even possible.
 - **Only you can flip `execution.mode` to `"live"`** — the agent is
-  explicitly barred from ever changing this itself, and refuses to
-  place live orders while `dry_run`.
+  explicitly barred from ever changing this itself, and refuses to call
+  the live order tool while the mode is anything else.
+- **Broker-side risk warnings are never auto-acknowledged** — if moomoo
+  asks for a secondary confirmation (`need_order_confirm`), the order is
+  logged and dropped for you to look at.
 - **Every decision is logged, approved or rejected** — `trade_log.jsonl`
   is append-only, so you can check whether the reasoning is actually
   sound, not just trust it.
 
 ## Requirements
 
-- A [Robinhood](https://robinhood.com) account with
-  [Agentic Trading](https://robinhood.com/us/en/agentic-trading/) enabled,
-  connected via Robinhood's own MCP server.
-- [Claude Code](https://claude.com/claude-code), on a Pro subscription or
-  higher.
-- A GitHub account, to host your own copy of this repo — only needed
-  for the cloud-hosted deployment (see "How it works" below for the
-  cloud vs. local tradeoff).
+- A [moomoo](https://www.moomoo.com/us) brokerage account (Moomoo
+  Financial Inc. for U.S.-based users). Non-U.S. tax residents,
+  including F-1 students without an SSN, can open one with a passport
+  and proof of address — see moomoo's help center, and `SETUP_zh.md`.
+- Its U.S. simulated-trading (paper) account enabled in the moomoo app.
+- [Claude Code](https://claude.com/claude-code), on a Pro subscription
+  or higher, with the moomoo MCP connected
+  (`claude mcp add moomoo-mcp --transport http https://mcp.moomoo.com/mcp`,
+  then authorize `quote:read`, `trade:read`, and — only when you're
+  ready for paper/live orders — `trade:write`).
+- A GitHub account, to host your own **private** copy of this repo
+  (the cloud-hosted schedule commits trading data back to it).
 
 ## How it works
 
@@ -66,13 +90,14 @@ overnight price.
 
 ```mermaid
 graph TD
-    RH[Robinhood MCP] -- watchlist + scan / quotes / historicals --> A[Phase A: Screen & Thesis]
+    MM[moomoo MCP] -- watchlist + screen / snapshots / K-lines --> A[Phase A: Screen & Thesis]
+    SM[scripts/screen_metrics.py] -- filters + signals --> A
     A -- thesis per candidate --> P[pending_proposals.jsonl]
     P --> B[Phase B: Re-verify & Risk Enforcement]
     RR[risk_rules.json] -- thresholds --> S[scripts/*.py deterministic risk math]
     S -- JSON results, read verbatim --> B
-    RH -- fresh open price / positions --> B
-    B -- dry_run or gated live order --> RH
+    MM -- fresh ask / positions / funds --> B
+    B -- dry_run log, paper order, or gated live order --> MM
     B -- every decision logged --> L[trade_log.jsonl]
     L -- plain-English recap --> REC[trade_log_recent.md]
 ```
@@ -83,22 +108,25 @@ ranking, and size is a deterministic script.
 **Phase A — screen and write a thesis** (Steps 1–3, ~4:30pm Central
 weekdays; spec `PHASE_A_TASK.md`). Places no orders.
 
-1. **Universe.** Start with your watchlist (up to
+1. **Universe.** Start with your moomoo watchlist group (up to
    `universe.watchlist_max_candidates`), plus up to
-   `universe.supplementary_scan_max_candidates` movers from your saved
-   Robinhood scan, plus every position you currently hold. Remove anything
-   failing the `universe` filters in `risk_rules.json` — volume,
-   market-cap band, minimum price, leveraged/inverse ETFs, price below its
-   200-day moving average. Held positions are always kept.
-2. **Signal gate.** A candidate is researched only if it meets **any one**
-   of `signal_thresholds`: a 60-day price move, a volume spike, or a price
-   near its 52-week high or low. The rest are logged `no_signal` with no
-   thesis. Held positions are always researched.
-3. **Thesis.** The model runs a news search and writes a line to
-   `pending_proposals.jsonl`: `direction` (`long` / `avoid` /
-   `exit_existing`), `conviction` (`high` / `medium` / `low`, against a
-   fixed rubric so the same facts give the same rating), `risk_flags`, and
-   percent below the 52-week high. This is the stock selection.
+   `universe.supplementary_screen_max_candidates` names from a
+   `quote_stock_screen` query you define in `risk_rules.json`, plus
+   every position you currently hold. `scripts/screen_metrics.py`
+   removes anything failing the `universe` filters — volume, market-cap
+   band, minimum price, price below its 200-day moving average — and the
+   model text-matches out leveraged/inverse ETFs. Held positions are
+   always kept.
+2. **Signal gate.** The same script decides whether a candidate meets
+   **any one** of `signal_thresholds`: a 60-day price move, a volume
+   spike, or a price near its 52-week high or low. The rest are logged
+   `no_signal` with no thesis. Held positions are always researched.
+3. **Thesis.** The model runs a news search (web and/or moomoo's
+   `news_search`) and writes a line to `pending_proposals.jsonl`:
+   `direction` (`long` / `avoid` / `exit_existing`), `conviction`
+   (`high` / `medium` / `low`, against a fixed rubric so the same facts
+   give the same rating), `risk_flags`, and percent below the 52-week
+   high. This is the stock selection.
 
 **Phase B — re-verify, enforce the rules, place orders** (Steps 4–9,
 ~8:35am Central weekdays; spec `PHASE_B_TASK.md`). Decides which `long`
@@ -113,90 +141,64 @@ candidates are bought:
   `earnings_blackout.blackout_trading_days` of its next earnings report.
 - **Rank** (`rank_candidates.py`). By conviction, then fewer `risk_flags`,
   then larger percent below the 52-week high.
-- **Size** (`position_sizing.py`). In ranked order, each candidate is
-  bought at its conviction-tier size (a fixed percent of the account)
-  until `max_concurrent_positions` or the `min_cash_buffer_pct` floor is
-  reached.
+- **Size** (`position_sizing.py --whole-shares`). In ranked order, each
+  candidate is bought at its conviction-tier size (a fixed percent of
+  the account, floored to whole shares) until `max_concurrent_positions`
+  or the `min_cash_buffer_pct` floor is reached.
 
 Every decision is logged to `trade_log.jsonl`. Some cycles buy nothing.
 
-**Example.** `EXAMPLE` is on your watchlist at $40, a $15B-cap trading
+**Example.** `EXAMPLE` is in your watchlist at $40, a $15B-cap trading
 above its 200-day average, so it passes the universe filters. It is up 16%
 over 60 days, so it meets the price-move threshold and gets a news search;
 the model finds a confirmed earnings beat, no risk flags, and rates it
 `high` conviction, `long`. Next morning it opens at $40.60, within all
 buy-gate limits, and is the only `high`-conviction candidate, so it ranks
-first. `high` is 20% of the account: on $500 that is a $100 buy, placed if
-the cash buffer holds. Had it opened at $42 — 5% above the thesis price,
-over the `entry_price_gap.max_pct` limit — the buy would be skipped that
-cycle.
+first. `high` is 20% of the account: on $500 that is $100, which floors
+to 2 shares ($81.20) — placed on the paper account if the cash buffer
+holds. Had it opened at $42 — 5% above the thesis price, over the
+`entry_price_gap.max_pct` limit — the buy would be skipped that cycle.
+Had it been a $150 stock, it would be skipped too: 0 whole shares fit in
+$100, and the pipeline never rounds up.
 
 Both are designed to run as cloud-hosted scheduled agent sessions,
 independent of any local machine — each run clones this repo fresh and
 commits/pushes its results back to `main`, so the repo itself is the
-persistent state, not local disk. (Running locally instead works too,
-but only fires while your machine is on and available at each
-scheduled time.)
+persistent state, not local disk.
 
-- `risk_rules.json` — the hard, mechanical limits (position sizing, stop-
-  loss, loss limits, universe filters, execution mode, wash-sale guard).
-  Nothing in this system should be able to override these. Several
-  fields need your own account details before this is usable — see
-  First-time setup below.
-- `scripts/` — the deterministic risk-math engines Phase B runs instead
-  of hand-computing anything, each a standalone Python 3 script (stdlib
-  only, no dependencies) you can run and inspect on its own:
+- `risk_rules.json` — the hard, mechanical limits (accounts, execution
+  mode, order parameters, position sizing, stop-loss, loss limits,
+  universe filters, wash-sale guard). Nothing in this system should be
+  able to override these. Several fields need your own account details
+  before this is usable — see First-time setup below.
+- `scripts/` — the deterministic engines, each a standalone Python 3
+  script (stdlib only) you can run and inspect on its own:
+  - `screen_metrics.py` — **(new)** Phase A's universe filters and
+    signal gate from a daily K-line series.
   - `entry_gate.py` — the buy gate above, every blocking condition in one
     call (including the pre-earnings blackout).
-  - `pnl_pct.py` — daily/weekly loss-limit % against `net_deposits_usd`
-    (computed fresh each cycle, see PHASE_B_TASK.md), and the
-    entries-halted decision.
+  - `realized_pnl.py` — **(new)** today's / this week's realized P&L
+    from the pipeline's own confirmed sell fills in `trade_log.jsonl`.
+  - `pnl_pct.py` — daily/weekly loss-limit % against `net_deposits_usd`,
+    and the entries-halted decision.
   - `stop_loss.py` — the fixed or volatility-scaled stop_pct (clamped,
     sample-stdev of daily returns), including the trailing-high reference
     price once a take-profit tier has fired, and the trigger decision.
   - `take_profit.py` — tiered partial-exit firing, cascading quantity
     correctly when a single cycle's gain jumps past more than one
-    not-yet-fired tier at once.
+    not-yet-fired tier at once; `--whole-shares` floors each tier.
   - `conviction_trim.py` — mechanically trims a held position back to
     its conviction-tier target after several consecutive
-    below-high-conviction, overweight cycles.
-  - `rank_candidates.py` — the ranking above (conviction, `risk_flags`,
-    `pct_below_52wk_high`); new entries and top-ups compete on one list.
+    below-high-conviction, overweight cycles; `--bid-price` floors it.
+  - `rank_candidates.py` — the ranking above; new entries and top-ups
+    compete on one list.
   - `position_sizing.py` — the sizing above, plus concurrency and
-    cash-buffer checks, compounding running totals down the ranked list.
-
-  Each takes plain CLI args, prints one JSON object, and is meant to be
-  read from directly rather than re-derived — see `PHASE_B_TASK.md`
-  Steps 5 and 7 for the exact call shape of each
-  (`stop_loss.py`/`take_profit.py`/`conviction_trim.py` in Step 5;
-  `entry_gate.py`/`pnl_pct.py`/`rank_candidates.py`/`position_sizing.py`
-  in Step 7).
+    cash-buffer checks, compounding running totals down the ranked list;
+    `--whole-shares` floors every buy to shares at the candidate's ask.
 - `PHASE_A_TASK.md` / `PHASE_B_TASK.md` — the full, self-contained spec
-  each phase follows.
+  each phase follows, with the exact moomoo tool for every call.
 - `trade_log_template.jsonl` — the log line shapes; real logs accumulate
   in `trade_log.jsonl` in this same style.
-
-## See it in action
-
-This is what a real Phase B cycle actually produces (`trade_log_recent.md`,
-regenerated every run, symbols genericized):
-
-> **2026-07-09**
->
-> **Loss limit**: OK — daily 0.0%, weekly -2.1%, within -5%/-10% limits.
->
-> **Held positions** (stop-loss / take-profit):
-> - EXAMPLE — stop 7.00% (vol-scaled), drawdown -2.3% — holding
->
-> **New-entry candidates considered**: OTHER, ANOTHER
-> - OTHER — approved: medium conviction, $60.00 (12% of account)
-> - ANOTHER — rejected: max_concurrent_positions already filled this cycle
->
-> **Orders placed**: OTHER — buy $60.00 (dry_run)
-
-No JSON parsing required to see what it did and why. Full field-level
-examples (thesis records, raw `trade_log.jsonl` lines) are further down
-in Example output.
 
 ## What this does and doesn't solve
 
@@ -204,123 +206,114 @@ in Example output.
   reason about trades" instead of an opaque one.
 - It does **not** make LLM-driven stock picking more likely to beat a
   simple index fund — there's no established track record for that, and
-  this can't backtest the reasoning step honestly (news-based reasoning
-  can't be validated against historical data the model may already know
-  the outcome of).
+  this can't backtest the reasoning step honestly.
 - The risk rules are the actual safety mechanism here, not the reasoning
   quality. Treat loosening them as the highest-risk change you can make
   to this system.
-- This is a template extracted from a real deployment trading a small
-  personal account, shared for others to learn from or adapt. It is
-  genuinely not financial advice, and running it against real money is
-  entirely your own decision and risk.
+- It is genuinely not financial advice, and running it against real money
+  is entirely your own decision and risk.
+
+## Known gaps (moomoo-specific)
+
+Things the Robinhood original got from one API call that moomoo's MCP
+doesn't offer directly. Each is handled, but read how before trusting it:
+
+- **Next earnings date.** No moomoo tool returns it. Phase B sources it
+  from a company IR announcement (`news_search`/web search) or a
+  confirmed listing on a major data site; an unconfirmable date is
+  logged `earnings_date_source: unknown` and does **not** block the buy.
+  If you'd rather fail closed, change that sentence in `PHASE_B_TASK.md`
+  Step 7.
+- **Realized P&L.** Computed from this pipeline's own logged fills, so
+  it's only complete if nothing else trades in the account — keep the
+  account dedicated.
+- **Wash-sale check on linked accounts.** Fill history carries no cost
+  basis, so any sell of the symbol in another linked account inside the
+  window is treated as a possible loss sale (it can only block a buy).
+  If you file as a non-resident the rule may not apply to you at all —
+  ask a tax professional; `wash_sale_avoidance.enabled: false` turns it
+  off.
+- **Trade password for live orders.** moomoo's docs say `trade:write`
+  needs the trade password; how (or whether) the hosted MCP caches it
+  for an unattended session is not documented. **Test one tiny live
+  order from a scheduled session before trusting the schedule.** If it
+  can't, the fallback is to keep `paper` as a signal generator and
+  place live orders by hand from `trade_log_recent.md`.
+- **Field names.** moomoo's responses are described in the task specs
+  by meaning (last price, 52-week high, average cost, max sellable
+  quantity, order state) rather than by exact key, since the hosted
+  tool list doesn't publish response schemas. Run one Phase A and one
+  Phase B interactively first and fix any naming the model stumbles on.
+- **Whole shares.** With a small account, high-priced stocks are simply
+  unbuyable at their tier size. Either accept that (it's logged), or
+  raise the account size / tier percentages.
 
 ## First-time setup
 
-**Get your own copy first:**
+**Get your own copy first:** click **"Use this template"** (or fork)
+and make the result **private** — it'll accumulate real trading data
+once running.
 
-- **Cloud-hosted scheduled sessions (recommended)**: these commit and
-  push results back to `main`, so you need a repo you actually control.
-  - **Running this against your own account**: click **"Use this
-    template"** (top of this repo's GitHub page) and make the result
-    **private** — it'll accumulate real trading data
-    (`trade_log.jsonl`, proposals) once running.
-  - **Building a public variant**, not running your own account:
-    **Fork** it — keeps a link back here and an easy "Sync fork" button
-    for updates.
-- **Running locally**: skip this — just clone or download the
-  repo; state lives on local disk, but your machine needs to be on and
-  available at each scheduled run time.
-
-See "Keeping your copy updated" below for pulling in future
-improvements.
-
-1. Robinhood's [Agentic Trading](https://robinhood.com/us/en/agentic-trading/)
-   requires a separate, dedicated account — distinct from your regular
-   investing account, and restricted to only the funds you put in it. See
-   that page to open one and connect its MCP server to Claude Code (or to
-   your routine's MCP connections). Nothing below works without this:
-   every tool call in `PHASE_A_TASK.md`/`PHASE_B_TASK.md` (quotes,
-   positions, orders, etc.) goes through it.
-2. Fill in `account_number` in `risk_rules.json` with your own Robinhood
-   account number, set `universe.watchlist_name` to a watchlist you've
-   already created and populated in your Robinhood account, and review
-   every other threshold — the defaults here are illustrative, not a
-   recommendation.
-3. Create a scan via the Robinhood MCP's `create_scan` tool — whatever
-   screening conditions you like — then paste its ID into
-   `universe.supplementary_scan_id`. Phase A calls this scan every run
-   to surface movers outside your watchlist — left as the placeholder,
-   that call fails every cycle.
-4. Fill in `wash_sale_avoidance.linked_accounts` with every Robinhood
-   account number you personally control, not just this one — if this is
-   genuinely the only account you trade in, a single-entry list (just
-   this account's number) is enough. Leave `enabled: true` unless you
-   specifically want buys never blocked on wash-sale grounds.
-5. Keep `execution.mode` set to `"dry_run"`. Leave it there for at least
-   the number of cycles set in `dry_run_min_cycles_before_live` — don't
-   shortcut this.
-6. After each cycle, read `trade_log.jsonl` yourself. Look specifically
-   at rejected candidates and stop-loss triggers, not just the trades
-   that "worked" — that's where you'll see if the reasoning step is
-   actually sound or just getting lucky with an uptrend.
-7. Only flip `execution.mode` to `"live"` yourself, by hand, after you've
-   reviewed enough dry-run cycles to trust the output. Do not let the
-   agent flip it for you as a shortcut.
-
-## Keeping your copy updated
-
-This template gets improvements over time.
-
-- **If you forked**: GitHub's "Sync fork" button, on your repo's main
-  page. No local git needed. Works cleanly as long as nothing conflicts
-  with your own changes.
-- **If you used the template (or "Sync fork" refuses on a conflict,
-  usually in `risk_rules.json`)**, resolve locally:
-  ```
-  git remote add upstream https://github.com/YizhiSong/FriesTrader.git
-  git fetch upstream
-  git merge upstream/main
-  ```
-  Resolve any conflicts in `risk_rules.json` by hand — your own account
-  details and thresholds should win, not upstream's placeholders.
+1. **Open the moomoo account** (Moomoo Financial Inc.). Without an SSN,
+   use the non-U.S.-tax-resident path with your passport and a proof of
+   address; the student promotion page in moomoo's help center
+   describes the eligibility. Then enable the U.S. **simulated trading**
+   account in the app (Trade → Paper Trading / 模拟交易).
+2. **Connect the MCP** in Claude Code:
+   ```bash
+   claude mcp add moomoo-mcp --transport http https://mcp.moomoo.com/mcp
+   ```
+   Authorize `quote:read` and `trade:read` first. Add `trade:write` only
+   when you move to `paper`.
+3. **Find your account ids** in a normal Claude Code session: ask it to
+   call `account_authorized_trd_accs` (the real U.S. securities account
+   → `accounts.live_acc_id`) and `sim_trade_account_list` (the U.S.
+   paper account → `accounts.paper_acc_id`, and its `market_id` →
+   `accounts.paper_market_id`). Paste them into `risk_rules.json`.
+4. **Watchlist.** Create a watchlist group in the moomoo app, add your
+   names, and put its exact name in `universe.watchlist_name`.
+5. **Screen query.** `universe.supplementary_screen_queries` ships with
+   a minimal U.S. + market-cap query. Ask Claude to run
+   `quote_stock_screen` with it once by hand and tune the conditions
+   (relative volume, RSI, change rate…) until the results look like
+   what you want; moomoo's screener docs list the factor ids.
+6. **Linked accounts.** Put every other moomoo acc_id you control into
+   `wash_sale_avoidance.linked_acc_ids`, or disable the guard.
+7. **Review every threshold** in `risk_rules.json` — the defaults are
+   illustrative, not a recommendation. With a few hundred dollars and
+   whole shares, `position_sizing.conviction_pct` decides which price
+   range of stocks is even buyable.
+8. **Start in `paper`.** Leave `execution.mode` there for at least
+   `execution.paper_min_cycles_before_live` validated days. Read
+   `trade_log.jsonl` yourself after each cycle — rejected candidates
+   and stop-loss triggers especially.
+9. Only flip `execution.mode` to `"live"` yourself, by hand, after
+   you've tested that a scheduled session can actually place a live
+   order (see Known gaps) and you trust the output.
 
 ## Running it
 
 Two schedules need to fire: Phase A around 4:30pm Central on weekdays
-(hand Claude Code `PHASE_A_TASK.md` to execute), and Phase B around
-8:35am Central on weekdays, 5 minutes after market open (hand it
-`PHASE_B_TASK.md`). Each run is a fresh Claude Code session pointed at
-this repo — no state needs to persist locally between runs, since the
-repo itself (`risk_rules.json`, `pending_proposals.jsonl`,
-`trade_log.jsonl`) is what's read and written each time.
+(hand Claude Code `PHASE_A_TASK.md`), and Phase B around 8:35am Central
+on weekdays, 5 minutes after market open (hand it `PHASE_B_TASK.md`).
+Each run is a fresh Claude Code session pointed at this repo with the
+moomoo MCP attached.
 
-- **Recommended: Claude Code's own scheduled cloud routines.** Set one
-  routine to run `PHASE_A_TASK.md` on the Phase A schedule and a second
-  for `PHASE_B_TASK.md` on the Phase B schedule, with the routine's
-  source pointed at **your copy** from First-time setup, not this repo.
-  This runs independent of any machine being on — the actual point of
-  "fully automated."
-- **Alternative: a local scheduler** (cron, Windows Task Scheduler, etc.)
-  invoking the Claude Code CLI against your copy on the same two
-  schedules. Works, but only while that machine is running, and you're
-  responsible for keeping the repo synced (`git pull` before, `git push`
-  after each run) since the repo — not local disk — is the source of
-  truth. If you go this route, make sure only one scheduler is ever
-  active for a given phase — two schedulers firing the same phase in the
-  same cycle risks duplicate `risk_check`/`order` log entries, or
-  duplicate real orders once `execution.mode` is `"live"`.
+- **Recommended: Claude Code's scheduled cloud routines** — one routine
+  per phase, source pointed at **your copy**, with the moomoo MCP
+  connected to the routine. Runs independent of any machine being on.
+  For Phase A, remove the order tools from the connector if the UI lets
+  you.
+- **Alternative: a local scheduler** (cron etc.) invoking the Claude
+  Code CLI. Only runs while that machine is on; make sure only one
+  scheduler is ever active per phase.
 
 ### Routine prompt templates
-
-The task specs don't cover scheduling or dates, and only Phase B's
-covers saving results — the rest is up to whatever runs them. These are the real prompts this project's live
-deployment uses; copy one in and swap in your own account number.
 
 #### Phase A prompt
 
 ```
-You are running the DAILY automated Phase A step (screening & thesis only) for a small real personal trading account on Robinhood (account_number: <your Robinhood account_number>). This repo has already been cloned into your working directory. PHASE_A_TASK.md in this checkout is the full source-of-truth spec for what to do (Steps 1-3) — read and follow it exactly.
+You are running the DAILY automated Phase A step (screening & thesis only) for a small personal trading pipeline on moomoo. This repo has already been cloned into your working directory. PHASE_A_TASK.md in this checkout is the full source-of-truth spec for what to do (Steps 1-3) — read and follow it exactly. All market data and account state come from the moomoo MCP server; symbols are passed to it as US.<ticker>.
 
 Do all the work yourself in this session. Don't spawn subagents.
 
@@ -330,11 +323,11 @@ TZ='America/Chicago' date +'%A'
 TZ='America/Chicago' date +'%H:%M:%S'
 Use the date as the 'date' field and the time as the 'timestamp' field (time-of-day only, e.g. "16:30:01" — never prepend the date to it) on every line you write, per PHASE_A_TASK.md's Output section.
 
-Read risk_rules.json fresh from this checkout every run — never assume prior values or cache across runs.
+Read risk_rules.json fresh from this checkout every run — never assume prior values or cache across runs. Use execution.mode only to pick which account's positions to read, as the spec says.
 
-Follow PHASE_A_TASK.md's Steps 1-3 exactly, including the screened/thesis/summary line shapes and the End-of-run summary section. Overwrite pending_proposals.jsonl in this checkout with this run's results (do not append to prior contents). Do NOT touch trade_log.jsonl.
+Follow PHASE_A_TASK.md's Steps 1-3 exactly, including running scripts/screen_metrics.py for every candidate rather than computing filters or signals yourself, the screened/thesis/summary line shapes, and the End-of-run summary section. Overwrite pending_proposals.jsonl in this checkout with this run's results (do not append to prior contents). Do NOT touch trade_log.jsonl.
 
-Hard stop: place_equity_order, review_equity_order, place_option_order, review_option_order, cancel_equity_order, and cancel_option_order should not be available to you in this session (exclude them at the connector level if your MCP setup allows it) — do not attempt them regardless, and do not check or reference execution.mode.
+Hard stop: trading_order_place, trading_order_replace, trading_order_cancel, trading_order_confirm, sim_trade_input_order, sim_trade_modify_order, sim_trade_cancel_order and every crypto_account_* write tool should not be available to you in this session (exclude them at the connector level if your MCP setup allows it) — do not attempt them regardless.
 
 When pending_proposals.jsonl is fully written, commit and push it back to this repo's main branch:
 git add pending_proposals.jsonl
@@ -348,7 +341,7 @@ End with a concise summary of what you screened/filtered/proposed, and confirm t
 #### Phase B prompt
 
 ```
-You are running the DAILY automated Phase B step (re-verify, risk enforcement, order review/execution, logging) for a small real personal trading account on Robinhood (account_number: <your Robinhood account_number>). This repo has already been cloned into your working directory. PHASE_B_TASK.md in this checkout is the full source-of-truth spec for what to do (Steps 4-9) — read and follow it exactly.
+You are running the DAILY automated Phase B step (re-verify, risk enforcement, order execution, logging) for a small personal trading pipeline on moomoo. This repo has already been cloned into your working directory. PHASE_B_TASK.md in this checkout is the full source-of-truth spec for what to do (Steps 0 and 4-9) — read and follow it exactly. All market data, account state and orders go through the moomoo MCP server; live tools take symbols as US.<ticker>, simulated-trading tools take the bare ticker plus market.
 
 Do all the work yourself in this session. Don't spawn subagents.
 
@@ -358,9 +351,9 @@ TZ='America/Chicago' date +'%A'
 TZ='America/Chicago' date +'%H:%M:%S'
 Use the date as the 'date' field and the time as the 'timestamp' field (time-of-day only, e.g. "08:35:01" — never prepend the date to it) on every line you write to trade_log.jsonl, per PHASE_B_TASK.md. Determine is_monday from the day-of-week output (true only if it's literally 'Monday') for the Step 7 weekend-gap check.
 
-Read risk_rules.json fresh from this checkout every run — never assume prior values or cache across runs. Read pending_proposals.jsonl and trade_log.jsonl fresh from this checkout too.
+Read risk_rules.json fresh from this checkout every run — never assume prior values or cache across runs. Read pending_proposals.jsonl and trade_log.jsonl fresh from this checkout too. Pick the account strictly from execution.mode as Step 0 says: 'live' uses accounts.live_acc_id and the live tools; 'paper' and 'dry_run' use accounts.paper_acc_id and the sim_trade_* tools; never touch the other one in the same run.
 
-Follow PHASE_B_TASK.md's Steps 4-9 exactly, including the idempotency rule (key off each candidate's own proposal_date, not today's date), the dry-run cycle count rule, the priority/tiebreak rules, and the live-order gate (Step 6 for sells, Step 8 for buys). This task is authorized to place real live orders only under that gate's narrow, explicit condition. Do not add, remove, or loosen any condition of that gate on your own judgment, and never change execution.mode or any other value in risk_rules.json yourself.
+Follow PHASE_B_TASK.md's Steps 0 and 4-9 exactly, including the idempotency rule (key off each candidate's own proposal_date, not today's date), the paper cycle count rule, the priority/tiebreak rules, the whole-share rounding (scripts, never by hand), the pre-trade capacity check, the need_order_confirm rejection rule, and the live-order gate (Step 6 for sells, Step 8 for buys). This task is authorized to place orders on the simulated account whenever execution.mode is 'paper', and real live orders only under the live gate's narrow, explicit condition. Do not add, remove, or loosen any condition of that gate on your own judgment, never call trading_order_confirm, and never change execution.mode or any other value in risk_rules.json yourself.
 
 Append every decision to trade_log.jsonl (do not touch pending_proposals.jsonl except to read it). When done, save to the repo exactly as PHASE_B_TASK.md Step 9's "Saving to the repo" describes:
 git add trade_log.jsonl trade_log_recent.md
@@ -386,6 +379,7 @@ End with a concise summary of what you checked, approved, rejected, and (if appl
   "conviction": "low | medium | high",
   "invalidation": "what would prove this thesis wrong",
   "direction": "long | avoid | exit_existing",
+  "current_price": 84.00,
   "new_fact_date": "YYYY-MM-DD (exit_existing within early_exit_guard's window only)",
   "risk_flags": ["..."],
   "pct_below_52wk_high": 0.15,
@@ -393,25 +387,12 @@ End with a concise summary of what you checked, approved, rejected, and (if appl
 }
 ```
 
-`risk_flags` and `pct_below_52wk_high` are only included when
-`direction` is `"long"` — omitted for `avoid`/`exit_existing`.
-
-- **No price targets** — no reliable basis for a specific number, and it
-  invites false precision.
-- **No forecasting language treated as fact** — "this suggests...", not
-  "this will...".
-
 **Phase B — `trade_log.jsonl`** (the durable, append-only source of
-truth — one line per decision; `trade_log_recent.md`, shown under "See
-it in action" above, is just its daily recap):
-
-```json
-{"date": "2026-07-10", "timestamp": "08:38:10", "symbol": "EXAMPLE", "stage": "risk_check", "passed": true, "conviction": "medium", "risk_flags": [], "pct_below_52wk_high": 0.08, "proposal_date": "2026-07-09", "position_size_usd": 60.00, "concurrent_positions_after": 2, "cash_remaining_after": 340.00, "cash_buffer_after_pct": 0.34}
-{"date": "2026-07-09", "timestamp": "08:35:12", "symbol": "EXAMPLE", "stage": "order", "mode": "dry_run", "action": "buy", "dollar_amount": 60.00, "quote_ask": 84.20, "quantity": 0.712, "would_execute": true, "review_alerts": "none (order_checks empty)", "proposal_date": "2026-07-09"}
-{"date": "2026-07-10", "timestamp": "08:38:30", "symbol": "OTHER", "stage": "stop_loss", "entry_price": 100.00, "current_price": 92.50, "stop_pct_used": 0.075, "stdev_20d": 0.030, "drawdown_pct": 0.075, "triggered": true, "action": "sell_full_position"}
-```
+truth — one line per decision; see `trade_log_template.jsonl` for every
+shape, including paper and live order lines with confirmed fills).
 
 ## License
 
 MIT — see `LICENSE`. Provided as-is, with no warranty; see the license
-for the full disclaimer.
+for the full disclaimer. Original work © Yizhi Song; moomoo adaptation
+released under the same terms.

@@ -13,9 +13,12 @@ priority list would.
 
 Candidate JSON is read from stdin, an array of objects:
   {"symbol": "GTLB", "group": "new", "conviction": "high"}
-  {"symbol": "AMZN", "group": "held", "conviction": "high", "current_position_value": 100.39}
+  {"symbol": "AMZN", "group": "held", "conviction": "high", "current_position_value": 100.39, "ask_price": 184.20}
 `group` is "new" or "held". `current_position_value` is required for
-"held" candidates only.
+"held" candidates only. `ask_price` is required for every candidate
+when --whole-shares is set: the dollar amount is then floored to whole
+shares (moomoo orders take a share quantity, not a dollar amount) and a
+candidate whose floored quantity is 0 is rejected, never rounded up.
 """
 import argparse
 import json
@@ -28,6 +31,12 @@ def parse_pct_map(s):
         tier, pct = part.split(":")
         out[tier] = float(pct)
     return out
+
+
+def to_shares(dollar_amount, ask_price):
+    """Floor a dollar amount to whole shares; returns (quantity, actual_dollars)."""
+    quantity = int(dollar_amount // ask_price)
+    return quantity, round(quantity * ask_price, 2)
 
 
 def main():
@@ -47,6 +56,9 @@ def main():
     p.add_argument("--min-top-up-pct-of-target", type=float, required=True)
     p.add_argument("--conviction-pct", type=parse_pct_map, required=True,
                     help='fixed conviction-tier sizing table, e.g. "high:0.20,medium:0.12,low:0.06"')
+    p.add_argument("--whole-shares", action="store_true",
+                    help="floor every buy to whole shares at the candidate's ask_price "
+                         "(risk_rules.json order_execution.whole_shares_only)")
     args = p.parse_args()
 
     try:
@@ -78,12 +90,26 @@ def main():
             results.append(halted_result)
             continue
 
+        ask_price = c.get("ask_price")
+        if args.whole_shares and not ask_price:
+            print(json.dumps({"error": f"ask_price required for symbol {symbol} with --whole-shares"}),
+                  file=sys.stderr)
+            sys.exit(1)
+
         if group == "new":
             dollar_amount = round(conviction_pct * args.total_value, 2)
+            quantity = None
+            if args.whole_shares:
+                quantity, dollar_amount = to_shares(dollar_amount, ask_price)
             candidate_concurrent_after = concurrent_positions_after + 1
             candidate_cash_after = cash_remaining - dollar_amount
 
             reasons = []
+            if args.whole_shares and quantity == 0:
+                reasons.append(
+                    f"share price ${ask_price:.2f} exceeds the {conviction_pct:.0%} position size "
+                    f"(${conviction_pct * args.total_value:.2f}) — whole-share broker, 0 shares affordable"
+                )
             if conviction_pct > args.max_position_pct:
                 reasons.append(f"position size {conviction_pct:.4%} exceeds max_position_pct_of_account {args.max_position_pct:.4%}")
             if candidate_concurrent_after > args.max_concurrent_positions:
@@ -112,6 +138,7 @@ def main():
                 "symbol": symbol, "group": group, "conviction": conviction,
                 "passed": True,
                 "dollar_amount": dollar_amount,
+                **({"quantity": quantity, "ask_price": ask_price} if args.whole_shares else {}),
                 "concurrent_positions_after": concurrent_positions_after,
                 "cash_remaining_after": round(cash_remaining, 2),
                 "cash_buffer_after_pct": round(cash_remaining / args.total_value, 6),
@@ -137,6 +164,22 @@ def main():
             top_up_amount = round(min(headroom, ceiling_room), 2)
             min_top_up_threshold = round(max(1.00, args.min_top_up_usd,
                                               args.min_top_up_pct_of_target * target_size), 2)
+            quantity = None
+            if args.whole_shares:
+                quantity, top_up_amount = to_shares(top_up_amount, ask_price)
+                if quantity == 0:
+                    results.append({
+                        "symbol": symbol, "group": group, "conviction": conviction,
+                        "passed": False, "position_action": "top_up",
+                        "reason": (
+                            f"top-up headroom ${headroom:.2f} is less than one share at "
+                            f"${ask_price:.2f} — whole-share broker, no order attempted"
+                        ),
+                        "current_position_value": round(current_position_value, 2),
+                        "target_size": round(target_size, 2),
+                        "headroom": round(headroom, 2),
+                    })
+                    continue
 
             if top_up_amount < min_top_up_threshold:
                 results.append({
@@ -178,6 +221,7 @@ def main():
                 "target_size": round(target_size, 2),
                 "headroom": round(headroom, 2),
                 "dollar_amount": top_up_amount,
+                **({"quantity": quantity, "ask_price": ask_price} if args.whole_shares else {}),
                 "cash_remaining_after": round(cash_remaining, 2),
                 "cash_buffer_after_pct": round(cash_remaining / args.total_value, 6),
             })
